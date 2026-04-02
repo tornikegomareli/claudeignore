@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -35,6 +36,8 @@ func main() {
 		cmdTest(os.Args[2])
 	case "status":
 		cmdStatus()
+	case "wrap":
+		cmdWrap()
 	case "update":
 		cmdUpdate()
 	case "version", "--version", "-v":
@@ -161,6 +164,148 @@ func matches(gi *ignore.GitIgnore, relPath, absPath string) bool {
 		return gi.MatchesPath(relPath + "/")
 	}
 	return gi.MatchesPath(relPath + "/")
+}
+
+func cmdWrap() {
+	if runtime.GOOS != "darwin" {
+		fatal("wrap is only supported on macOS (uses sandbox-exec/Seatbelt)")
+	}
+
+	root, err := os.Getwd()
+	if err != nil {
+		fatal("Cannot get working directory: %v", err)
+	}
+
+	gi, err := ignore.CompileIgnoreFile(filepath.Join(root, ".claudeignore"))
+	if err != nil {
+		fatal("No .claudeignore found in current directory")
+	}
+
+	denied := collectDeniedPaths(root, gi)
+	if len(denied) == 0 {
+		fmt.Println("No files matched .claudeignore — running claude without sandbox.")
+		execClaude(os.Args[2:])
+		return
+	}
+
+	profile := generateSeatbeltProfile(denied)
+
+	tmpFile, err := os.CreateTemp("", "claudeignore-*.sb")
+	if err != nil {
+		fatal("Cannot create sandbox profile: %v", err)
+	}
+	tmpFile.WriteString(profile)
+	tmpFile.Close()
+	defer os.Remove(tmpFile.Name())
+
+	fmt.Printf("Sandboxing %d paths via macOS Seatbelt\n", len(denied))
+
+	args := []string{"-f", tmpFile.Name()}
+	claudePath, err := exec.LookPath("claude")
+	if err != nil {
+		fatal("claude not found in PATH")
+	}
+	args = append(args, claudePath)
+	args = append(args, os.Args[2:]...)
+
+	cmd := exec.Command("sandbox-exec", args...)
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+
+	if err := cmd.Run(); err != nil {
+		if exitErr, ok := err.(*exec.ExitError); ok {
+			os.Exit(exitErr.ExitCode())
+		}
+		fatal("sandbox-exec failed: %v", err)
+	}
+}
+
+func collectDeniedPaths(root string, gi *ignore.GitIgnore) []string {
+	var denied []string
+	skipDirs := map[string]bool{}
+
+	filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return nil
+		}
+
+		rel, err := filepath.Rel(root, path)
+		if err != nil || rel == "." {
+			return nil
+		}
+
+		if rel == ".git" {
+			return filepath.SkipDir
+		}
+
+		for skip := range skipDirs {
+			if strings.HasPrefix(path, skip) {
+				return nil
+			}
+		}
+
+		if info.IsDir() {
+			if gi.MatchesPath(rel) || gi.MatchesPath(rel+"/") {
+				denied = append(denied, path)
+				skipDirs[path+string(filepath.Separator)] = true
+				return filepath.SkipDir
+			}
+			return nil
+		}
+
+		if gi.MatchesPath(rel) {
+			denied = append(denied, path)
+		}
+		return nil
+	})
+
+	return denied
+}
+
+func generateSeatbeltProfile(deniedPaths []string) string {
+	var b strings.Builder
+	b.WriteString("(version 1)\n")
+	b.WriteString("(deny default)\n")
+	b.WriteString("(allow default)\n")
+
+	for _, p := range deniedPaths {
+		resolved, err := filepath.EvalSymlinks(p)
+		if err != nil {
+			resolved = p
+		}
+		escaped := seatbeltEscape(resolved)
+		info, err := os.Stat(p)
+		if err == nil && info.IsDir() {
+			fmt.Fprintf(&b, "(deny file-read-data file-write-data (subpath \"%s\"))\n", escaped)
+		} else {
+			fmt.Fprintf(&b, "(deny file-read-data file-write-data (literal \"%s\"))\n", escaped)
+		}
+	}
+
+	return b.String()
+}
+
+func seatbeltEscape(path string) string {
+	path = strings.ReplaceAll(path, "\\", "\\\\")
+	path = strings.ReplaceAll(path, "\"", "\\\"")
+	return path
+}
+
+func execClaude(args []string) {
+	claudePath, err := exec.LookPath("claude")
+	if err != nil {
+		fatal("claude not found in PATH")
+	}
+	cmd := exec.Command(claudePath, args...)
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		if exitErr, ok := err.(*exec.ExitError); ok {
+			os.Exit(exitErr.ExitCode())
+		}
+	}
 }
 
 func cmdUpdate() {
@@ -290,6 +435,7 @@ USAGE
 
 COMMANDS
     setup         One-time: register hook globally in ~/.claude/settings.json
+    wrap          Launch claude inside macOS Seatbelt sandbox (blocks sub-agents)
     update        Update to the latest version
     hook          PreToolUse handler (called automatically by Claude Code)
     test <path>   Test if a file path would be blocked
@@ -300,5 +446,8 @@ HOW IT WORKS
     1. Run 'claudeignore setup' once after installing
     2. Drop a .claudeignore file in any project (gitignore syntax)
     3. That's it — Claude Code will skip those files automatically
+
+    For sub-agent protection on macOS, use 'claudeignore wrap' to launch
+    claude inside a kernel-level sandbox.
 `, version)
 }

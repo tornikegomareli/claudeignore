@@ -47,11 +47,14 @@ Create a `.claudeignore` in your project and put there anything you don't want c
 
 sub-agents spawned via the Agent tool can bypass hooks. On macOS, `claudeignore wrap` launches Claude inside a kernel-level sandbox Seatbelt
 
+<img width="3390" height="1164" alt="CleanShot 2026-04-03 at 03 45 17@2x" src="https://github.com/user-attachments/assets/9230f762-9d30-4b7b-9af3-e19a7f289ca2" />
+
 ```bash
 claudeignore wrap
 ```
 
 Every process in the tree, sub-agents, shell commands, everything is blocked from accessing ignored files at the OS level. There is no way around it.
+
 
 > `wrap` is macOS only. Linux and Windows need their own implementations, contributions welcome. As I researched on Linux it can be used landlock LSM, and on windows detours/iat hooking, but do your own research.
 

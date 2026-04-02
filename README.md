@@ -52,4 +52,4 @@ claudeignore version        # show version
 
 ## License
 
-MIT
+[MIT](LICENSE)

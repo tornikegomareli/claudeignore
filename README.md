@@ -41,13 +41,26 @@ claudeignore setup
 
 Create a `.claudeignore` in your project and put there anything you don't want claude to touch.
 
+## Sub-agent protection (macOS)
+
+Sub-agents spawned via the Agent tool can bypass hooks. On macOS, `claudeignore wrap` launches Claude inside a kernel-level sandbox (Seatbelt):
+
+```bash
+claudeignore wrap
+```
+
+Every process in the tree — sub-agents, shell commands, everything — is blocked from accessing ignored files at the OS level. There is no way around it.
+
+> `wrap` is macOS only. Linux and Windows need their own implementations — contributions welcome (Linux: Landlock LSM, Windows: Detours/IAT hooking).
 
 ## Commands
 
 ```bash
 claudeignore setup          # one-time: register hook globally
+claudeignore wrap           # launch claude inside macOS kernel sandbox
+claudeignore test <path>    # check if a path would be blocked
+claudeignore status         # show current configuration
 claudeignore update         # update to latest version
-claudeignore version        # show version
 ```
 
 ## License
